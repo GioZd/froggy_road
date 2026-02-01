@@ -96,6 +96,7 @@ def main():
 
         # Draw the frog last so it is on top of logs/cars
         frog.draw(screen)
+        frog.update()
 
         pygame.display.update()
         clock.tick(FPS)

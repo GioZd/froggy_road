@@ -9,14 +9,17 @@ class Texture(Enum):
     ASPHALT = 1
     WATER = 2
 
-def load_image(path: str, size: tuple[int, int] | None = None, rotation: int = 0):
+def load_image(path: str, 
+               size: tuple[int, int] | None = None, 
+               rotation: int = 0):
     img = pygame.image.load(path)
     if size:
         img = pygame.transform.rotate(img, rotation)
         img = pygame.transform.scale(img, size)
     return img
 
-ASPHALT_TEXTURE = load_image("assets/roadline.png", size=(SCREEN_WIDTH, SCREEN_HEIGHT/5))
+ASPHALT_TEXTURE = load_image("assets/roadline.png", 
+                             size=(SCREEN_WIDTH, SCREEN_HEIGHT/5))
 CAR = load_image("assets/cars/Sport/sport_red.png", 
                  size=(64, 0.6*SCREEN_HEIGHT/5), rotation=-90)
 TRUCK = load_image("assets/cars/Truck/truck_blue.png", 
@@ -33,24 +36,33 @@ class Frog(pygame.sprite.Sprite):
         self.rect.center = (SCREEN_WIDTH/2, SCREEN_HEIGHT-42)
 
         # Cooldown attributes
-        self.move_cooldown = 300  # 0.3 seconds in milliseconds
-        self.last_move_time = pygame.time.get_ticks()
+        # self.move_cooldown = 300  # 0.3 seconds in milliseconds
+        # self.last_move_time = pygame.time.get_ticks()
+        self.move_cooldown = 0
+        self.cooldown_duration = 15
         self.hitbox = pygame.Rect(0, 0, 16, 16) # it's where collision actually happens
 
         self.step_size = SCREEN_WIDTH / 16 # for horizontal moving
 
     def can_move(self):
-        current_time = pygame.time.get_ticks()
-        return current_time - self.last_move_time >= self.move_cooldown
+        # current_time = pygame.time.get_ticks()
+        # return current_time - self.last_move_time >= self.move_cooldown
+        return self.move_cooldown == 0
     
     def move_horizontal(self, direction):
         if self.can_move():
+            self.move_cooldown = self.cooldown_duration # reset timer
+
             # Move the visual rect
             self.rect.x += direction * self.step_size
             
             # Keep on screen
             # if self.rect.left < 0: self.rect.left = 0
             # if self.rect.right > SCREEN_WIDTH: self.rect.right = SCREEN_WIDTH
+            if self.rect.left < -64:
+                self.rect.left = 0
+            elif self.rect.right > SCREEN_WIDTH + 64:
+                self.rect.right = SCREEN_WIDTH
             
             # Sync the hitbox!
             self.hitbox.center = self.rect.center
@@ -63,10 +75,11 @@ class Frog(pygame.sprite.Sprite):
                 # Face Left
                 self.image = pygame.transform.rotate(self.original_image, 90)
             
-            self.last_move_time = pygame.time.get_ticks()
+            # self.last_move_time = pygame.time.get_ticks()
     
     def jump(self):
-        self.last_move_time = pygame.time.get_ticks()
+        self.move_cooldown = self.cooldown_duration
+        # self.last_move_time = pygame.time.get_ticks()
 
     def face_north(self):
         self.image = self.original_image
@@ -75,15 +88,20 @@ class Frog(pygame.sprite.Sprite):
         self.rect.x += platform_speed
         
         # Keep frog within screen bounds while riding
-        if self.rect.left < 0:
+        if self.rect.left < -64:
             self.rect.left = 0
-        elif self.rect.right > SCREEN_WIDTH:
+        elif self.rect.right > SCREEN_WIDTH + 64:
             self.rect.right = SCREEN_WIDTH
         
         self.hitbox.center = self.rect.center
     
     def draw(self, surface):
         surface.blit(self.image, self.rect)
+
+    def update(self):
+        # Decrement cooldown every frame
+        if self.move_cooldown > 0:
+            self.move_cooldown -= 1
 
 
 
@@ -119,7 +137,8 @@ class Obstacle(pygame.sprite.Sprite):
 
 
 class Line(pygame.sprite.Sprite):
-    def __init__(self, texture: Texture = Texture.GRASS, progress: int = 0, rng = None):
+    def __init__(self, texture: Texture = Texture.GRASS, 
+                 progress: int = 0, rng = None):
         super().__init__()
         self.size = (SCREEN_WIDTH, int(SCREEN_HEIGHT / 5))
         self.texture_type = texture
@@ -137,15 +156,19 @@ class Line(pygame.sprite.Sprite):
         self.rng = random if rng is None else rng
         ## Line is responsible for the cars/logs spawning
         self.obstacles = pygame.sprite.Group()
-        self.speed = 0
+
         if texture == Texture.ASPHALT:
             self.speed = self.rng.choice([-3, -2, 2, 3])
-            self.spawn_rate = max(800, 2500 - (progress * 10))
+            self.spawn_rate = round(max(60, 150 - (progress * 0.6)))
+            # round(max(800, 2500 - (progress * 10)) * FPS / 1000)
         elif texture == Texture.WATER:
             self.speed = self.rng.choice([-1.75, -1.5, -1.25, 1.25, 1.5, 1.75]) # Logs move slower
-            self.spawn_rate = min(5000, 1800 + (progress * 20)) # Cap at 5s
+            self.spawn_rate = round(min(270, 108 + (progress * 1.2)))
+            # round(min(5000, 1800 + (progress * 20)) * FPS / 1000) # Cap at 5s
         else: 
+            self.speed = 0
             self.spawn_rate = 0
+        self.spawn_timer = 0
         self.last_spawn_time = pygame.time.get_ticks()
 
 
@@ -187,20 +210,46 @@ class Line(pygame.sprite.Sprite):
         self.target_y = SCREEN_HEIGHT - (level + 1) * (SCREEN_HEIGHT / 5)
 
     def update(self):
-        """Slide backwards and move obstacles"""
+        """Slide backwards and move obstacles (Frame-based)"""
+        # 1. Slide logic
+        # This is already frame-based (moves a % of distance per frame)
         distance = self.target_y - self.rect.y
-        
         if abs(distance) > 1:
             self.rect.y += distance * 0.2
         else:
             self.rect.y = self.target_y
 
-        # 2. Check for Spawning
+        # 2. Check for Spawning (Frame-based counter)
         if self.spawn_rate > 0:
-            now = pygame.time.get_ticks()
-            if now - self.last_spawn_time > self.spawn_rate:
+            # decrement our frame counter instead of checking system clock
+            self.spawn_timer -= 1 
+            
+            if self.spawn_timer <= 0:
                 self._spawn_single_obstacle()
-                self.last_spawn_time = now
+                # Reset the timer. 
+                # Note: You should adjust spawn_rate in __init__ to be 
+                # a number of frames (e.g., 60 to 180) instead of ms.
+                self.spawn_timer = self.spawn_rate + self.rng.randint(-5, 20)
 
         # 3. Update existing obstacles
+        # Pass the current lane Y so obstacles stay aligned with the sliding lane
         self.obstacles.update(self.rect.y)
+
+    # def update(self):
+    #     """Slide backwards and move obstacles"""
+    #     distance = self.target_y - self.rect.y
+        
+    #     if abs(distance) > 1:
+    #         self.rect.y += distance * 0.2
+    #     else:
+    #         self.rect.y = self.target_y
+
+    #     # 2. Check for Spawning
+    #     if self.spawn_rate > 0:
+    #         now = pygame.time.get_ticks()
+    #         if now - self.last_spawn_time > self.spawn_rate:
+    #             self._spawn_single_obstacle()
+    #             self.last_spawn_time = now
+
+    #     # 3. Update existing obstacles
+    #     self.obstacles.update(self.rect.y)

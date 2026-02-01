@@ -1,6 +1,7 @@
 import pygame
 import neat
 import os
+import math
 import random
 from time import sleep
 from game_config import SCREEN_WIDTH, SCREEN_HEIGHT, FPS
@@ -17,6 +18,61 @@ def reorder_lines(lines):
 
 def hitbox_collision(sprite_a, sprite_b):
     return sprite_a.hitbox.colliderect(sprite_b.rect)
+
+def print_genome_topology(genome, config):
+    print("\n" + "="*40)
+    print(" BEST GENOME TOPOLOGY ")
+    print("="*40)
+    
+    # Define readable names for your 21 inputs
+    input_names = {}
+    idx = -1 # NEAT inputs are usually negative indices starting from -1 down to -num_inputs
+    input_names[idx]   = "Time"
+    input_names[idx]   = "Near_Edge"
+    idx -= 2
+    for i in range(2): # 5 Lanes
+        lane_name = f"L{i}" # L0 is closest, L4 is furthest
+        input_names[idx] = f"{lane_name}_Road"
+        input_names[idx-1] = f"{lane_name}_Water"
+        input_names[idx-2] = f"{lane_name}_Speed"
+        input_names[idx-3] = f"{lane_name}_Obs1_X"
+        input_names[idx-4] = f"{lane_name}_Obs2_X"
+        idx -= 5
+    lane_name = f"L{2}" # L0 is closest, L4 is furthest
+    input_names[idx] = f"{lane_name}_Road"
+    input_names[idx-1] = f"{lane_name}_Water"
+    input_names[idx-2] = f"{lane_name}_Speed"
+    input_names[idx-3] = f"{lane_name}_Obs1_X"
+    idx -= 4
+    for i in range(2): # 5 Lanes
+        lane_name = f"L{i}" # L0 is closest, L4 is furthest
+        input_names[idx] = f"{lane_name}_Road"
+        input_names[idx-1] = f"{lane_name}_Water"
+        idx -= 2
+    
+    output_names = {0: 'FORWARD', 1: 'LEFT', 2: 'RIGHT', 3: 'REST'}
+
+    print(f"Nodes: {len(genome.nodes)}")
+    print(f"Connections: {len(genome.connections)}")
+    print("-" * 40)
+    
+    # Sort connections by absolute weight to see strongest drivers first
+    sorted_conns = sorted(genome.connections.values(), key=lambda c: abs(c.weight), reverse=True)
+    
+    for conn in sorted_conns:
+        if not conn.enabled:
+            continue
+            
+        # Resolve Source Name
+        src = input_names.get(conn.key[0], f"Node {conn.key[0]}")
+        
+        # Resolve Target Name
+        tgt = output_names.get(conn.key[1], f"Node {conn.key[1]}")
+        
+        # Visual weight
+        weight_bar = "+" * int(conn.weight) if conn.weight > 0 else "-" * int(abs(conn.weight))
+        print(f"{src:>15}  -->  {tgt:<10}  [{conn.weight:+.2f}] {weight_bar}")
+
 
 class SingleSimulation:
     """Manages a single Frog's game state within the population."""
@@ -48,38 +104,65 @@ class SingleSimulation:
         self.frames_survived = 0
         self.distance_score = 0
         self.stagnation_timer = 0
-        self.max_stagnation_frames = FPS * 3  # 3 seconds to make a step, then fitness will decrease
-        self.max_stagnation_frames_to_death = FPS * 7  # if the frog doesn't move for 7 seconds it dies
+        self.max_stagnation_frames = 180 # FPS * 3  # 3 seconds to make a step, then fitness will decrease
+        self.max_stagnation_frames_to_death = 480 # FPS * 8  # if the frog doesn't move for 7 seconds it dies
 
-    def get_inputs(self):
-        inputs = []
-        for line in self.lines:
+    def get_inputs(self) -> list[float]:
+        """Returns a list of the inputs for the first layer of the network.
+        - stagnation time (log-transformed)
+        - a variable that is 
+            -1 if the frog is near the left edge,
+            1 if it is close to the right edge
+            0 othewise
+        - lane speed (3x nearest lanes)
+        - one hot encoding for type of ground (10x inputs)
+        - 2 x-nearest vehicles for the 0th level
+        - 2 x-nearest vehicles for the 1st level
+        - 1 x-nearest vehicle for the 2nd level
+        Total: 20 inputs
+        """
+        how_long_has_been_resting_lognormalized = (
+            -1 + 2*math.log2(self.stagnation_timer+1)/math.log2(480)
+        )
+        frogh = 0
+        if self.frog.rect.centerx - self.frog.step_size < 0:
+            frogh = -1
+        elif self.frog.rect.centerx + self.frog.step_size > SCREEN_WIDTH:
+            frogh = 1
+        inputs = [how_long_has_been_resting_lognormalized, frogh]
+        for lev, line in enumerate(self.lines):
+            # print(line.texture_type)
             # 1. Type & Speed
-            type_val = 0 # 0 if it's grass
-            if line.texture_type == Texture.WATER:
-                type_val = -1
-            elif line.texture_type == Texture.ASPHALT:
-                type_val = 1
-            inputs.extend([type_val, line.speed / 5.0])
+            # type_val = 0 # 0 if it's grass
+            # if line.texture_type == Texture.WATER:
+            #     type_val = -1
+            # elif line.texture_type == Texture.ASPHALT:
+            #     type_val = 1
+            is_asphalt = 1.0 if line.texture_type == Texture.ASPHALT else 0.0
+            is_water = 1.0 if line.texture_type == Texture.WATER else 0.0
+            inputs.extend([is_asphalt, is_water])
+            if lev < 3:
+                inputs.append(line.speed / 5.0)
             
             # 2. Closest Obstacles (finding two closest relative to frog)
             obstacles = sorted(line.obstacles, key=lambda o: abs(o.rect.centerx - self.frog.rect.centerx))
-            for i in range(2):
+            how_many_obstacles = [2, 2, 1, 0, 0] # not all obstacles are measured, to save nodes
+            for i in range(how_many_obstacles[lev]):
                 if i < len(obstacles):
                     if obstacles[i].rect.centerx < self.frog.rect.centerx:
                         rel_x = (obstacles[i].rect.right - self.frog.rect.left) / SCREEN_WIDTH
                     else:
                         rel_x = (obstacles[i].rect.left - self.frog.rect.right) / SCREEN_WIDTH
-                    rel_y = (obstacles[i].rect.centery - self.frog.rect.centery) / SCREEN_HEIGHT
-                    inputs.extend([rel_x, rel_y])
+                    # rel_y = (obstacles[i].rect.centery - self.frog.rect.centery) / SCREEN_HEIGHT
+                    inputs.append(rel_x)
+                    # inputs.append(rel_y)
                 else:
-                    inputs.extend([1.0, 1.0]) 
+                    inputs.append(-1.0 * line.speed)
         return inputs
 
     def update(self):
         if not self.alive:
             return
-
         self.frames_survived += 1
         self.stagnation_timer += 1
         
@@ -104,6 +187,7 @@ class SingleSimulation:
             self.frog.move_horizontal(1)
 
         self.all_sprites.update()
+        self.frog.update()
         
         # 2. Death Condition: Side Edges
         # If the frog center goes off-screen, it's a death
@@ -114,12 +198,12 @@ class SingleSimulation:
         # 3. Death Condition: Stagnation (Waiting too long)
         if self.stagnation_timer > self.max_stagnation_frames:
             # Gradually drain fitness for staying still
-            self.genome.fitness -= 4 * 1/FPS 
+            self.genome.fitness -= 0.05 # 3 * 1/FPS 
             
             # If the frog is absolutely useless, kill it
             if self.stagnation_timer > self.max_stagnation_frames_to_death:
                 self.alive = False
-            if self.genome.fitness < -10:
+            if self.genome.fitness < -5:
                 self.alive = False
 
         # 4. Standard Death Conditions (Water/Cars)
@@ -145,7 +229,7 @@ def eval_genomes(genomes, config):
     clock = pygame.time.Clock()
     
     if generation == 1:
-        sleep(30) # This is for me for starting filming
+        sleep(0) # This is for me for starting filming
 
     # Initialize simulations
     sims = []
@@ -206,8 +290,9 @@ def run_neat(config_file):
     stats = neat.StatisticsReporter()
     p.add_reporter(stats)
 
-    winner = p.run(eval_genomes, 150)
+    winner = p.run(eval_genomes, 100)
     print('\nBest genome:\n{!s}'.format(winner))
+    print_genome_topology(winner, config)
 
 if __name__ == '__main__':
     run_neat('neat-config.txt')

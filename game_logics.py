@@ -16,7 +16,7 @@ class LevelGenerator:
         
         # 1. Calculate Probability of Grass
         # Using 1/log2(progress + 2) to avoid log(1) or log(0)
-        p_grass = 1 / math.log2(self.steps_taken + 2)
+        p_grass = max(1.3 / math.log2(self.steps_taken + 2), 1/8)
         if last_texture == Texture.GRASS:
             p_grass = 0
             
