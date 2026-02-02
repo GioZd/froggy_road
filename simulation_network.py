@@ -1,5 +1,9 @@
 import pygame
 import neat
+import matplotlib.pyplot as plt
+# import networkx as nx  # Optional, but makes layout 10x easier. Standard in data science.
+
+import asyncio
 import os
 import math
 import random
@@ -19,7 +23,7 @@ def reorder_lines(lines):
 def hitbox_collision(sprite_a, sprite_b):
     return sprite_a.hitbox.colliderect(sprite_b.rect)
 
-def print_genome_topology(genome, config):
+def print_genome_topology(genome, config, file_path: str | None = None):
     print("\n" + "="*40)
     print(" BEST GENOME TOPOLOGY ")
     print("="*40)
@@ -72,6 +76,211 @@ def print_genome_topology(genome, config):
         # Visual weight
         weight_bar = "+" * int(conn.weight) if conn.weight > 0 else "-" * int(abs(conn.weight))
         print(f"{src:>15}  -->  {tgt:<10}  [{conn.weight:+.2f}] {weight_bar}")
+
+    # Image Generation (Matplotlib)
+    if file_path:
+        print(f"\nGenerating network graph -> {file_path}...")
+        
+        # Create a figure without a window (headless)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.set_title(f"Winner Genome (Fit: {int(genome.fitness)})")
+        
+        # Separate nodes by type
+        inputs = []
+        outputs = []
+        hidden = []
+        
+        active_nodes = set()
+        for c in sorted_conns:
+            active_nodes.add(c.key[0])
+            active_nodes.add(c.key[1])
+            
+        for n in active_nodes:
+            if n < 0: inputs.append(n)
+            elif n < 4: outputs.append(n)
+            else: hidden.append(n)
+            
+        # Determine Positions (Layered Layout)
+        pos = {}
+        
+        # Inputs on Left (x=0)
+        inputs.sort(reverse=True) # Keep logical order (L0 top, L4 bottom)
+        for i, n in enumerate(inputs):
+            y = 1.0 - (i / max(1, len(inputs)-1))
+            pos[n] = (0, y)
+            
+        # Outputs on Right (x=1)
+        outputs.sort()
+        for i, n in enumerate(outputs):
+            y = 1.0 - (i / max(1, len(outputs)-1))
+            pos[n] = (1, y)
+            
+        # Hidden in Center (x=0.5) - Simple vertical distribution
+        hidden.sort()
+        for i, n in enumerate(hidden):
+            y = 1.0 - (i / max(1, len(hidden)-1)) if len(hidden) > 1 else 0.5
+            pos[n] = (0.5, y)
+
+        # Draw Edges
+        for c in sorted_conns:
+            src, dst = c.key
+            if src in pos and dst in pos:
+                x_vals = [pos[src][0], pos[dst][0]]
+                y_vals = [pos[src][1], pos[dst][1]]
+                
+                color = 'green' if c.weight > 0 else 'red'
+                width = min(abs(c.weight) * 1.8, 3.6) # Cap thickness
+                alpha = min(abs(c.weight)/3.0 + 0.1, 0.9)
+                
+                ax.plot(x_vals, y_vals, c=color, lw=width, alpha=alpha, zorder=1)
+
+        # Draw Nodes
+        for n, (x, y) in pos.items():
+            # Colors: Input=Blue, Output=Orange, Hidden=Grey
+            color = 'lightblue' if n < 0 else ('orange' if n < 4 else 'lightgrey')
+            
+            circle = plt.Circle((x, y), 0.1, color=color, ec='black', zorder=2)
+            ax.add_patch(circle)
+            
+            # Text Label
+            lbl = input_names.get(n, output_names.get(n, str(n)))
+            ax.text(x, y, lbl, fontsize=6, ha='center', va='center', fontweight='bold', zorder=3)
+
+        ax.axis('off')
+        ax.set_aspect('equal')
+        
+        # Save and Close
+        plt.tight_layout()
+        plt.savefig(file_path, dpi=150)
+        plt.close(fig)
+        print("Graph saved successfully.")
+
+class LiveVisualizer:
+    def __init__(self, config):
+        self.config = config
+        self.fig, self.ax = plt.subplots(figsize=(8, 5))
+        plt.ion()  # Turn on interactive mode
+        self.fig.suptitle("Leader Brain Topology")
+        
+        # --- 1. Define Node Names (Matching your get_inputs logic) ---
+        self.node_names = {}
+        idx = -1 
+        
+        # Global Inputs
+        self.node_names[idx] = "Time"; idx -= 1
+        self.node_names[idx] = "Edge"; idx -= 1
+        
+        # L0 (Closest)
+        self.node_names[idx] = "L0_Asph"; idx -= 1
+        self.node_names[idx] = "L0_Watr"; idx -= 1
+        self.node_names[idx] = "L0_Spd";  idx -= 1
+        self.node_names[idx] = "L0_Ob1";  idx -= 1
+        self.node_names[idx] = "L0_Ob2";  idx -= 1
+        
+        # L1
+        self.node_names[idx] = "L1_Asph"; idx -= 1
+        self.node_names[idx] = "L1_Watr"; idx -= 1
+        self.node_names[idx] = "L1_Spd";  idx -= 1
+        self.node_names[idx] = "L1_Ob1";  idx -= 1
+        self.node_names[idx] = "L1_Ob2";  idx -= 1
+        
+        # L2
+        self.node_names[idx] = "L2_Asph"; idx -= 1
+        self.node_names[idx] = "L2_Watr"; idx -= 1
+        self.node_names[idx] = "L2_Spd";  idx -= 1
+        self.node_names[idx] = "L2_Ob1";  idx -= 1
+        
+        # L3
+        self.node_names[idx] = "L3_Asph"; idx -= 1
+        self.node_names[idx] = "L3_Watr"; idx -= 1
+        
+        # L4
+        self.node_names[idx] = "L4_Asph"; idx -= 1
+        self.node_names[idx] = "L4_Watr"; idx -= 1
+        
+        # Outputs
+        self.node_names[0] = "FWD"
+        self.node_names[1] = "LEFT"
+        self.node_names[2] = "RIGHT"
+        self.node_names[3] = "REST"
+
+    async def update(self, genome):
+        self.ax.clear()
+        
+        # 1. Build Graph
+        # We separate nodes by layers for visual clarity
+        inputs = []
+        outputs = []
+        hidden = []
+        
+        # Collect nodes from genome connections
+        active_nodes = set()
+        for key, conn in genome.connections.items():
+            if conn.enabled:
+                active_nodes.add(key[0])
+                active_nodes.add(key[1])
+        
+        for n in active_nodes:
+            if n < 0: inputs.append(n)
+            elif n < 4: outputs.append(n)
+            else: hidden.append(n)
+            
+        # 2. Assign Positions (Manual Layout)
+        pos = {}
+        
+        # Inputs: x=0, distributed vertically
+        inputs.sort(reverse=True) # Sort to keep order consistent
+        for i, node in enumerate(inputs):
+            y = (i / (len(inputs) - 1)) if len(inputs) > 1 else 0.5
+            pos[node] = (-1, y)
+            
+        # Outputs: x=1, distributed vertically
+        outputs.sort()
+        for i, node in enumerate(outputs):
+            y = (i / (len(outputs) - 1)) if len(outputs) > 1 else 0.5
+            pos[node] = (1, y)
+            
+        # Hidden: x=0, distributed randomly or by ID
+        # (Simple heuristic: place them in a column in the middle)
+        hidden.sort()
+        for i, node in enumerate(hidden):
+            y = (i / (len(hidden) + 1))  # Avoid 0 and 1
+            pos[node] = (0, y + 0.1) # Slight offset
+
+        # 3. Draw Edges
+        for key, conn in genome.connections.items():
+            if not conn.enabled: continue
+            
+            src, dst = key
+            if src not in pos or dst not in pos: continue
+            
+            # Style based on weight
+            color = 'green' if conn.weight > 0 else 'red'
+            width = min(abs(conn.weight) * 1.8, 3.6) # Cap thickness
+            alpha = min(abs(conn.weight) / 3.0 + 0.1, 0.9)
+            
+            # Draw line
+            x_vals = [pos[src][0], pos[dst][0]]
+            y_vals = [pos[src][1], pos[dst][1]]
+            self.ax.plot(x_vals, y_vals, color=color, linewidth=width, alpha=alpha, zorder=1)
+
+        # 4. Draw Nodes
+        for node, (x, y) in pos.items():
+            # Color logic
+            c = 'skyblue' if node < 0 else ('orange' if node < 4 else 'lightgrey')
+            self.ax.add_patch(plt.Circle((x, y), 0.1, color=c, zorder=2))
+            
+            # Label
+            lbl = self.node_names.get(node, str(node))
+            self.ax.text(x, y, lbl, fontsize=6, ha='center', va='center', zorder=3, fontweight='bold')
+
+        self.ax.set_xlim(-1.2, 1.2)
+        self.ax.set_ylim(-0.1, 1.1)
+        self.ax.axis('off')
+        self.ax.set_aspect('equal')
+        
+        # CRITICAL: This updates the window without blocking
+        plt.pause(0.001)
 
 
 class SingleSimulation:
@@ -229,7 +438,12 @@ def eval_genomes(genomes, config):
     clock = pygame.time.Clock()
     
     if generation == 1:
-        sleep(40) # This is for me for starting filming
+        # We store it in a global or passing it around if needed, 
+        # but creating it here is fine for the session.
+        # Note: If you close the plot window, it might crash, so keep it open.
+        global viz
+        viz = LiveVisualizer(config)
+        sleep(10) # This is for me for starting filming
 
     # Initialize simulations
     sims = []
@@ -238,7 +452,9 @@ def eval_genomes(genomes, config):
         sims.append(SingleSimulation(genome, config, seed=generation))
 
     generation_running = True
+    frame_count = 0 # To throttle graph updates
     while generation_running and len(sims) > 0:
+        frame_count += 1
         # Handle Pygame events so window doesn't freeze
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -258,6 +474,10 @@ def eval_genomes(genomes, config):
             # We draw the world of the BEST current frog as the background
             # Sorting by fitness to find the leader
             leader = max(sims, key=lambda s: s.genome.fitness)
+
+            # --- UPDATE GRAPH (Throttle: Once every 30 frames) ---
+            if frame_count % FPS == 1:
+                asyncio.run(viz.update(leader.genome))
             
             for line in leader.lines:
                 screen.blit(line.image, line.rect)
@@ -292,7 +512,7 @@ def run_neat(config_file):
 
     winner = p.run(eval_genomes, 200)
     print('\nBest genome:\n{!s}'.format(winner))
-    print_genome_topology(winner, config)
+    print_genome_topology(winner, config, file_path='final_network.png')
 
 if __name__ == '__main__':
     run_neat('neat-config.txt')
