@@ -229,7 +229,7 @@ def eval_genomes(genomes, config):
     clock = pygame.time.Clock()
     
     if generation == 1:
-        sleep(40) # This is for me for starting filming
+        sleep(1) # This is for me for starting filming
 
     # Initialize simulations
     sims = []
