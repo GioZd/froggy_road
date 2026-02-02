@@ -3,8 +3,9 @@ import neat
 import matplotlib.pyplot as plt
 # import networkx as nx  # Optional, but makes layout 10x easier. Standard in data science.
 
-import asyncio
+# import asyncio
 import os
+import sys
 import math
 import random
 from time import sleep
@@ -32,7 +33,7 @@ def print_genome_topology(genome, config, file_path: str | None = None):
     input_names = {}
     idx = -1 # NEAT inputs are usually negative indices starting from -1 down to -num_inputs
     input_names[idx]   = "Time"
-    input_names[idx]   = "Near_Edge"
+    input_names[idx-1]   = "Near_Edge"
     idx -= 2
     for i in range(2): # 5 Lanes
         lane_name = f"L{i}" # L0 is closest, L4 is furthest
@@ -49,12 +50,13 @@ def print_genome_topology(genome, config, file_path: str | None = None):
     input_names[idx-3] = f"{lane_name}_Obs1_X"
     idx -= 4
     for i in range(2): # 5 Lanes
-        lane_name = f"L{i}" # L0 is closest, L4 is furthest
+        lane_name = f"L{i+3}" # L0 is closest, L4 is furthest
         input_names[idx] = f"{lane_name}_Road"
         input_names[idx-1] = f"{lane_name}_Water"
         idx -= 2
     
     output_names = {0: 'FORWARD', 1: 'LEFT', 2: 'RIGHT', 3: 'REST'}
+    node_names = input_names | output_names
 
     print(f"Nodes: {len(genome.nodes)}")
     print(f"Connections: {len(genome.connections)}")
@@ -82,7 +84,7 @@ def print_genome_topology(genome, config, file_path: str | None = None):
         print(f"\nGenerating network graph -> {file_path}...")
         
         # Create a figure without a window (headless)
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(7, 4))
         ax.set_title(f"Winner Genome (Fit: {int(genome.fitness)})")
         
         # Separate nodes by type
@@ -91,9 +93,9 @@ def print_genome_topology(genome, config, file_path: str | None = None):
         hidden = []
         
         active_nodes = set()
-        for c in sorted_conns:
-            active_nodes.add(c.key[0])
-            active_nodes.add(c.key[1])
+        for key, conn in genome.connections.items():
+            active_nodes.add(key[0])
+            active_nodes.add(key[1])
             
         for n in active_nodes:
             if n < 0: inputs.append(n)
@@ -105,15 +107,15 @@ def print_genome_topology(genome, config, file_path: str | None = None):
         
         # Inputs on Left (x=0)
         inputs.sort(reverse=True) # Keep logical order (L0 top, L4 bottom)
-        for i, n in enumerate(inputs):
+        for i, node in enumerate(inputs):
             y = 1.0 - (i / max(1, len(inputs)-1))
-            pos[n] = (0, y)
+            pos[node] = (0, y)
             
         # Outputs on Right (x=1)
         outputs.sort()
-        for i, n in enumerate(outputs):
+        for i, node in enumerate(outputs):
             y = 1.0 - (i / max(1, len(outputs)-1))
-            pos[n] = (1, y)
+            pos[node] = (1, y)
             
         # Hidden in Center (x=0.5) - Simple vertical distribution
         hidden.sort()
@@ -122,28 +124,28 @@ def print_genome_topology(genome, config, file_path: str | None = None):
             pos[n] = (0.5, y)
 
         # Draw Edges
-        for c in sorted_conns:
-            src, dst = c.key
+        for key, conn in genome.connections.items():
+            src, dst = key
             if src in pos and dst in pos:
                 x_vals = [pos[src][0], pos[dst][0]]
                 y_vals = [pos[src][1], pos[dst][1]]
                 
-                color = 'green' if c.weight > 0 else 'red'
-                width = min(abs(c.weight) * 1.8, 3.6) # Cap thickness
-                alpha = min(abs(c.weight)/3.0 + 0.1, 0.9)
+                color = 'green' if conn.weight > 0 else 'red'
+                width = min(abs(conn.weight) * 1.8, 3.6) # Cap thickness
+                alpha = min(abs(conn.weight)/3.0 + 0.1, 0.9)
                 
                 ax.plot(x_vals, y_vals, c=color, lw=width, alpha=alpha, zorder=1)
 
         # Draw Nodes
-        for n, (x, y) in pos.items():
+        for node, (x, y) in pos.items():
             # Colors: Input=Blue, Output=Orange, Hidden=Grey
-            color = 'lightblue' if n < 0 else ('orange' if n < 4 else 'lightgrey')
+            color = 'lightblue' if node < 0 else ('orange' if node < 4 else 'lightgrey')
             
-            circle = plt.Circle((x, y), 0.1, color=color, ec='black', zorder=2)
+            circle = plt.Circle((x, y), 0.07, color=color, zorder=2)
             ax.add_patch(circle)
             
             # Text Label
-            lbl = input_names.get(n, output_names.get(n, str(n)))
+            lbl = node_names.get(node, str(node))
             ax.text(x, y, lbl, fontsize=6, ha='center', va='center', fontweight='bold', zorder=3)
 
         ax.axis('off')
@@ -158,8 +160,9 @@ def print_genome_topology(genome, config, file_path: str | None = None):
 class LiveVisualizer:
     def __init__(self, config):
         self.config = config
-        self.fig, self.ax = plt.subplots(figsize=(8, 5))
+        self.fig, self.ax = plt.subplots(figsize=(7, 4))
         plt.ion()  # Turn on interactive mode
+        plt.tight_layout()
         self.fig.suptitle("Leader Brain Topology")
         
         # --- 1. Define Node Names (Matching your get_inputs logic) ---
@@ -204,7 +207,7 @@ class LiveVisualizer:
         self.node_names[2] = "RIGHT"
         self.node_names[3] = "REST"
 
-    async def update(self, genome):
+    def update(self, genome):
         self.ax.clear()
         
         # 1. Build Graph
@@ -268,7 +271,7 @@ class LiveVisualizer:
         for node, (x, y) in pos.items():
             # Color logic
             c = 'skyblue' if node < 0 else ('orange' if node < 4 else 'lightgrey')
-            self.ax.add_patch(plt.Circle((x, y), 0.1, color=c, zorder=2))
+            self.ax.add_patch(plt.Circle((x, y), 0.07, color=c, zorder=2))
             
             # Label
             lbl = self.node_names.get(node, str(node))
@@ -280,7 +283,7 @@ class LiveVisualizer:
         self.ax.set_aspect('equal')
         
         # CRITICAL: This updates the window without blocking
-        plt.pause(0.001)
+        plt.pause(0.005)
 
 
 class SingleSimulation:
@@ -443,7 +446,7 @@ def eval_genomes(genomes, config):
         # Note: If you close the plot window, it might crash, so keep it open.
         global viz
         viz = LiveVisualizer(config)
-        sleep(10) # This is for me for starting filming
+        sleep(1) # This is for me for starting filming
 
     # Initialize simulations
     sims = []
@@ -477,7 +480,10 @@ def eval_genomes(genomes, config):
 
             # --- UPDATE GRAPH (Throttle: Once every 30 frames) ---
             if frame_count % FPS == 1:
-                asyncio.run(viz.update(leader.genome))
+                # asyncio.run(viz.update(leader.genome))
+                viz.update(leader.genome)
+            else:
+                plt.pause(0.00001)
             
             for line in leader.lines:
                 screen.blit(line.image, line.rect)
@@ -512,7 +518,7 @@ def run_neat(config_file):
 
     winner = p.run(eval_genomes, 200)
     print('\nBest genome:\n{!s}'.format(winner))
-    print_genome_topology(winner, config, file_path='final_network.png')
+    print_genome_topology(winner, config, file_path='another_winner_network.png')
 
 if __name__ == '__main__':
     run_neat('neat-config.txt')
